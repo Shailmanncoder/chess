@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Smart Chess</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: sans-serif;
+      text-align: center;
+      background: #f0f0f0;
+    }
+    h1 { margin-top: 10px; }
+
+    #board {
+      display: grid;
+      grid-template-columns: repeat(8, 1fr);
+      aspect-ratio: 1 / 1;
+      width: 90vmin;
+      max-width: 480px;
+      margin: 10px auto;
+      border: 3px solid #333;
+    }
+
+    .cell {
+      position: relative;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      font-size: 4.5vmin;
+      aspect-ratio: 1;
+      box-sizing: border-box;
+      user-select: none;
+      transition: transform 0.3s ease;
+    }
+
+    .light { background: #f0d9b5; }
+    .dark  { background: #b58863; }
+    .last-move { outline: 3px solid yellow; }
+
+    #controls, #status, #history {
+      margin: 10px auto;
+      width: 95%;
+      max-width: 450px;
+    }
+
+    #history {
+      background: white;
+      padding: 10px;
+      border: 1px solid #ccc;
+      text-align: left;
+    }
+
+    select, button {
+      font-size: 14px;
+      margin: 5px;
+      padding: 5px 10px;
+    }
+
+    input[type="file"] { display: none; }
+  </style>
+</head>
+<body>
+  <h1>♟️ Smart Chess</h1>
+
+  <div id="controls">
+    Mode:
+    <select id="mode">
+      <option value="ai" selected>Vs AI</option>
+      <option value="2p">2 Player</option>
+    </select>
+    AI Level:
+    <select id="ai-level">
+      <option value="easy">Easy</option>
+      <option value="normal">Normal</option>
+      <option value="hard" selected>Hard</option>
+    </select>
+    <button onclick="restart()">Restart</button>
+    <button onclick="flipBoard()">Flip</button>
+    <button onclick="undo()">Undo</button>
+    <button onclick="saveGame()">Save</button>
+    <button onclick="loadGame()">Load</button>
+    <input type="file" id="fileInput">
+  </div>
+
+  <div id="status">White's turn</div>
+  <div id="board"></div>
+  <div id="history"><strong>Moves:</strong> <span id="moves"></span></div>
+
+  <!-- Sound -->
+  <audio id="captureSound" src="https://cdn.pixabay.com/download/audio/2023/04/27/audio_21c0c6cf63.mp3?filename=click-game-ui-132918.mp3"></audio>
+
+  <script src="https://cdn.jsdelivr.net/npm/chess.js@0.10.3/chess.min.js"></script>
+  <script>
+    const boardEl = document.getElementById("board");
+    const statusEl = document.getElementById("status");
+    const movesEl = document.getElementById("moves");
+    const fileInput = document.getElementById("fileInput");
+    const sound = document.getElementById("captureSound");
+
+    const game = new Chess();
+    let selected = null;
+    let flipped = false;
+    let lastMove = [];
+    let capturedPieces = { w: [], b: [] };
+
+    const symbols = {
+      r: "♜", n: "♞", b: "♝", q: "♛", k: "♚", p: "♟",
+      R: "♖", N: "♘", B: "♗", Q: "♕", K: "♔", P: "♙"
+    };
+
+    function renderBoard() {
+      boardEl.innerHTML = "";
+      const board = game.board();
+      const rows = [...Array(8).keys()];
+      const cols = [...Array(8).keys()];
+      if (flipped) {
+        rows.reverse();
+        cols.reverse();
+      }
+
+      for (let r of rows) {
+        for (let c of cols) {
+          const square = "abcdefgh"[c] + (8 - r);
+          const cell = document.createElement("div");
+          const piece = board[r][c];
+          cell.className = "cell " + ((r + c) % 2 === 0 ? "light" : "dark");
+          cell.dataset.square = square;
+          if (piece) {
+            const s = piece.color === "w" ? piece.type.toUpperCase() : piece.type;
+            cell.textContent = symbols[s];
+          }
+          if (lastMove.includes(square)) cell.classList.add("last-move");
+
+          const k = game.get(square);
+          if (game.in_check() && k?.type === "k" && k?.color === game.turn()) {
+            const redDot = document.createElement("div");
+            redDot.style.position = "absolute";
+            redDot.style.width = "30%";
+            redDot.style.height = "30%";
+            redDot.style.borderRadius = "50%";
+            redDot.style.backgroundColor = "red";
+            cell.appendChild(redDot);
+          }
+
+          boardEl.appendChild(cell);
+        }
+      }
+    }
+
+    function updateStatus() {
+      if (game.in_checkmate()) {
+        statusEl.textContent = "Checkmate! " + (game.turn() === "w" ? "Black" : "White") + " wins!";
+      } else if (game.in_draw()) {
+        statusEl.textContent = "Draw!";
+      } else {
+        statusEl.textContent = (game.turn() === "w" ? "White" : "Black") + "'s turn" +
+          (game.in_check() ? " (Check!)" : "");
+      }
+    }
+
+    function updateMoves() {
+      const history = game.history({ verbose: true });
+      movesEl.innerHTML = "";
+      history.forEach((m, i) => {
+        movesEl.innerHTML += (i % 2 === 0 ? `${Math.floor(i / 2) + 1}. ` : "") + `${m.from}→${m.to} `;
+      });
+    }
+
+    boardEl.addEventListener("click", (e) => {
+      const square = e.target.dataset.square;
+      if (!square) return;
+      const piece = game.get(square);
+      if (selected) {
+        const promotion = getPromotionChoice(game.turn(), selected, square);
+        const move = game.move({ from: selected, to: square, promotion });
+        if (move) {
+          if (move.captured) {
+            capturedPieces[move.color].push(move.captured);
+            sound.play();
+            animateCapture(square);
+          }
+          lastMove = [move.from, move.to];
+          selected = null;
+          renderBoard();
+          updateStatus();
+          updateMoves();
+          if (document.getElementById("mode").value === "ai" && game.turn() === "b") {
+            setTimeout(aiMove, 300);
+          }
+          return;
+        }
+        selected = null;
+        renderBoard();
+      } else if (piece?.color === game.turn()) {
+        selected = square;
+        highlightLegalMoves(square);
+      }
+    });
+
+    function getPromotionChoice(turn, from, to) {
+      const piece = game.get(from);
+      if (!piece || piece.type !== 'p' || (to[1] !== '1' && to[1] !== '8')) return undefined;
+      const opponent = turn === 'w' ? 'b' : 'w';
+      const captured = [...new Set(capturedPieces[opponent])];
+      let choice = prompt(`Promote to: ${captured.join(", ")} (r/n/b/q)`);
+      return ['r', 'n', 'b', 'q'].includes(choice) ? choice : 'q';
+    }
+
+    function highlightLegalMoves(square) {
+      renderBoard();
+      const moves = game.moves({ square, verbose: true });
+      for (let m of moves) {
+        const el = document.querySelector(`.cell[data-square="${m.to}"]`);
+        if (el) {
+          const circle = document.createElement("div");
+          circle.style.position = "absolute";
+          circle.style.width = "30%";
+          circle.style.height = "30%";
+          circle.style.borderRadius = "50%";
+          circle.style.backgroundColor = m.captured ? "red" : "rgba(0, 255, 0, 0.7)";
+          el.appendChild(circle);
+        }
+      }
+    }
+
+    function animateCapture(square) {
+      const el = document.querySelector(`.cell[data-square="${square}"]`);
+      if (el) {
+        el.style.transform = "scale(1.4)";
+        setTimeout(() => { el.style.transform = "scale(1)"; }, 300);
+      }
+    }
+
+    function aiMove() {
+      const level = document.getElementById("ai-level").value;
+      const moves = game.moves({ verbose: true }).sort(() => Math.random() - 0.5);
+      let move;
+      if (level === "easy") {
+        move = moves[Math.floor(Math.random() * moves.length)];
+      } else if (level === "normal") {
+        move = moves.find(m => m.captured) || moves[Math.floor(Math.random() * moves.length)];
+      } else {
+        move = minimaxRoot(3, true);
+      }
+      if (move) {
+        if (move.captured) {
+          capturedPieces[move.color].push(move.captured);
+          sound.play();
+          animateCapture(move.to);
+        }
+        game.move(move);
+        lastMove = [move.from, move.to];
+        renderBoard();
+        updateStatus();
+        updateMoves();
+      }
+    }
+
+    function minimaxRoot(depth, isMaximizing) {
+      let bestMoves = [];
+      let bestVal = -Infinity;
+
+      for (const move of game.moves({ verbose: true })) {
+        game.move(move);
+        const val = minimax(depth - 1, -Infinity, Infinity, false);
+        game.undo();
+        if (val > bestVal) {
+          bestVal = val;
+          bestMoves = [move];
+        } else if (val === bestVal) {
+          bestMoves.push(move);
+        }
+      }
+
+      const topMoves = bestMoves.sort(() => 0.5 - Math.random()).slice(0, 3);
+      return topMoves[Math.floor(Math.random() * topMoves.length)];
+    }
+
+    function minimax(depth, alpha, beta, isMaximizing) {
+      if (depth === 0) return evaluateBoard();
+      const moves = game.moves({ verbose: true });
+      if (isMaximizing) {
+        let maxEval = -Infinity;
+        for (const move of moves) {
+          game.move(move);
+          const eval = minimax(depth - 1, alpha, beta, false);
+          game.undo();
+          maxEval = Math.max(maxEval, eval);
+          alpha = Math.max(alpha, eval);
+          if (beta <= alpha) break;
+        }
+        return maxEval;
+      } else {
+        let minEval = Infinity;
+        for (const move of moves) {
+          game.move(move);
+          const eval = minimax(depth - 1, alpha, beta, true);
+          game.undo();
+          minEval = Math.min(minEval, eval);
+          beta = Math.min(beta, eval);
+          if (beta <= alpha) break;
+        }
+        return minEval;
+      }
+    }
+
+    function evaluateBoard() {
+      const weights = { p: 100, n: 320, b: 330, r: 500, q: 900, k: 20000 };
+      let score = 0;
+      const board = game.board();
+      for (let r = 0; r < 8; r++) {
+        for (let c = 0; c < 8; c++) {
+          const piece = board[r][c];
+          if (piece) {
+            const value = weights[piece.type];
+            score += piece.color === 'w' ? value : -value;
+          }
+        }
+      }
+      return score;
+    }
+
+    function flipBoard() {
+      flipped = !flipped;
+      renderBoard();
+    }
+
+    function restart() {
+      game.reset();
+      selected = null;
+      lastMove = [];
+      capturedPieces = { w: [], b: [] };
+      renderBoard();
+      updateStatus();
+      updateMoves();
+    }
+
+    function undo() {
+      game.undo();
+      renderBoard();
+      updateStatus();
+      updateMoves();
+    }
+
+    function saveGame() {
+      const blob = new Blob([game.fen()], { type: "text/plain" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "chess-game.fen";
+      a.click();
+    }
+
+    function loadGame() {
+      fileInput.click();
+    }
+
+    fileInput.addEventListener("change", e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = e => {
+        game.load(e.target.result.trim());
+        renderBoard();
+        updateStatus();
+        updateMoves();
+      };
+      reader.readAsText(file);
+    });
+
+    document.getElementById("mode").addEventListener("change", restart);
+
+    renderBoard();
+    updateStatus();
+    updateMoves();
+  </script>
+</body>
+</html>
